@@ -1,138 +1,159 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
-import folium
-from streamlit_folium import st_folium
+import time
 import io
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 
-# Page Configuration
-st.set_page_config(page_title="Aeropath A* Flight Simulator", layout="wide")
+st.set_page_config(page_title="Aeropath A* Flight Simulator", layout="centered")
 
-st.title("✈️ Aeropath Autonomy & A* Flight Simulator")
-st.markdown("Live Interactive Routing, Cost Analysis, and Automated PDF Export")
+st.title("✈️ Aeropath Autonomy Flight Simulator")
+st.markdown("### A* Route Finder & Step Cost Engine")
 
-# --- SIDEBAR INPUTS ---
-st.sidebar.header("Flight Parameters")
-dep = st.sidebar.text_input("Departure Airport", "KJFK").upper()
-arr = st.sidebar.text_input("Arrival Airport", "KPDX").upper()
-distance = st.sidebar.number_input("Total Route Distance (NM)", value=2084.5)
-wind_speed = st.sidebar.number_input("Wind Speed (knots)", value=25.0)
-radar = st.sidebar.number_input("Radar Reflectivity (dBZ) [Storm Severity]", value=35.0)
-lightning = st.sidebar.number_input("Lightning Flash Rate", value=5.0)
-density = st.sidebar.number_input("Air Density (kg/m³)", value=1.225)
+# --- UI CONTROL BOXES ---
+col1, col2 = st.columns(2)
+with col1:
+    dep = st.text_input("Departure ICAO", "KJFK").upper()
+    distance = st.number_input("Total Route Distance (NM)", value=2084.5)
+    wind_speed = st.number_input("Wind Speed (knots)", value=25.0)
 
-# --- SIMULATION & A* CALCULATIONS ---
-if st.sidebar.button("Run Flight Simulation", type="primary"):
-    # Math Formulas
-    w = 0.1 * wind_speed
-    a = 1.15
-    t_val = 1.05
-    p = 1.0
+with col2:
+    arr = st.text_input("Arrival ICAO", "KPDX").upper()
+    radar = st.number_input("Radar Reflectivity (dBZ)", value=35.0)
+    lightning = st.number_input("Lightning Flash Rate", value=5.0)
+
+density = st.number_input("Air Density (kg/m³)", value=1.225)
+
+# --- SIMULATION SPEED SLIDER ---
+sim_speed = st.slider("Simulation Speed Multiplier", min_value=1, max_value=30, value=10)
+
+# --- SESSION STATE MANAGEMENT FOR SIMULATION BUTTONS ---
+if 'simulation_state' not in st.session_state:
+    st.session_state.simulation_state = "IDLE" # IDLE, RUNNING, FINISHED
+if 'current_step' not in st.session_state:
+    st.session_state.current_step = 0
+
+# --- CONTROL BUTTONS ---
+btn_col1, btn_col2, btn_col3, btn_col4 = st.columns(4)
+
+with btn_col1:
+    if st.button("Find Route"):
+        st.session_state.simulation_state = "IDLE"
+        st.session_state.current_step = 0
+        st.success("Route found! Ready to start simulation.")
+
+with btn_col2:
+    if st.button("Start"):
+        st.session_state.simulation_state = "RUNNING"
+
+with btn_col3:
+    if st.button("Stop"):
+        st.session_state.simulation_state = "IDLE"
+
+with btn_col4:
+    if st.button("Reset"):
+        st.session_state.simulation_state = "IDLE"
+        st.session_state.current_step = 0
+        st.rerun()
+
+# --- YOUR EXACT FORMULAS ---
+w = 0.1 * wind_speed
+a = 1.15
+t_val = 1.05
+p = 1.0
+
+clear_cost = ((distance * ((a + t_val) * w)) / p) * (1 + density)
+storm_cost = ((distance * ((0.6 * radar) + (0.4 * lightning) * w)) / p) * (1 + density)
+total_s_n = clear_cost + storm_cost
+effective_range = 3550 - (50 + w)
+clearance = (0.1 * wind_speed) * 1000
+
+# Total mock steps for the A* path simulation
+total_steps = 10
+
+# --- SIMULATION EXECUTION LOOP ---
+progress_bar = st.progress(0)
+status_text = st.empty()
+
+if st.session_state.simulation_state == "RUNNING":
+    for step in range(st.session_state.current_step, total_steps + 1):
+        if st.session_state.simulation_state == "IDLE":
+            break # Stop if user hit stop
+        
+        st.session_state.current_step = step
+        progress_val = step / total_steps
+        progress_bar.progress(progress_val)
+        status_text.text(f"Executing A* Step {step} of {total_steps} (Speed: {sim_speed}x)...")
+        
+        # Adjust sleep time based on user speed slider (faster speed = less sleep delay)
+        time.sleep(0.3 / sim_speed)
+        
+        if step == total_steps:
+            st.session_state.simulation_state = "FINISHED"
+            st.rerun()
+
+# --- DISPLAY METRICS & LOGS ---
+if st.session_state.current_step > 0:
+    st.markdown("---")
+    st.subheader("📊 Flight Cost & Route Metrics")
     
-    clear_cost = ((distance * ((a + t_val) * w)) / p) * (1 + density)
-    storm_cost = ((distance * ((0.6 * radar) + (0.4 * lightning) * w)) / p) * (1 + density)
-    total_s_n = clear_cost + storm_cost
-    effective_range = 3550 - (50 + w)
-    clearance = (0.1 * wind_speed) * 1000
+    m1, m2, m3 = st.columns(3)
+    m1.metric("A* Step Cost (sₙ)", f"{total_s_n:.2f}")
+    m2.metric("Effective Range", f"{effective_range:.2f} NM")
+    m3.metric("Vertical Clearance", f"{clearance:.0f} ft")
 
-    st.success("Simulation Complete! A* Path Generated.")
-
-    # --- METRICS DISPLAY ---
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Total A* Step Cost (sₙ)", f"{total_s_n:.2f}")
-    col2.metric("Effective Aircraft Range", f"{effective_range:.2f} NM")
-    col3.metric("Vertical Storm Clearance", f"{clearance:.0f} ft")
-
-    # --- LIVE MAP VISUALIZATION ---
-    st.subheader("🗺️ Live Route Map & Weather Avoidance")
+    # Step-by-step reasoning table
+    log_rows = []
+    for i in range(1, st.session_state.current_step + 1):
+        step_cost = (total_s_n / total_steps) * i
+        reason = "Optimal trajectory vector maintaining standard separation."
+        if i == 4 or i == 7:
+            reason = "A* path correction: Deviated around high radar reflectivity cluster."
+        log_rows.append({"Step": i, "Cost (sₙ)": f"{step_cost:.2f}", "Reasoning": reason})
     
-    # Simple mock coordinates for demonstration (Replace with real airport lat/lon lookup if desired)
-    m = folium.Map(location=[40.0, -95.0], zoom_start=4)
-    
-    # Draw path line
-    points = [[40.6413, -73.7781], [45.5898, -122.5951]] # JFK to PDX approx
-    folium.PolyLine(points, color="blue", weight=4, opacity=0.8, tooltip="A* Optimized Path").add_to(m)
-    folium.Marker(points[0], popup=f"Departure: {dep}", icon=folium.Icon(color="green")).add_to(m)
-    folium.Marker(points[1], popup=f"Arrival: {arr}", icon=folium.Icon(color="red")).add_to(m)
-    
-    # Render map in Streamlit
-    st_folium(m, width=1000, height=400)
+    st.dataframe(pd.DataFrame(log_rows), use_container_width=True)
 
-    # --- STEP REASONING & LOG TABLE ---
-    st.subheader("📋 A* Step-by-Step Route Log & Reasoning")
-    log_data = [
-        {"Step": 1, "Waypoint": f"{dep} Departure", "Cost (sₙ)": f"{total_s_n * 0.1:.2f}", "Reasoning": "Initial climb vector; low wind resistance impact."},
-        {"Step": 2, "Waypoint": "Waypoint Alpha", "Cost (sₙ)": f"{total_s_n * 0.3:.2f}", "Reasoning": "Adjusted heading to bypass high radar reflectivity sector."},
-        {"Step": 3, "Waypoint": "Waypoint Bravo", "Cost (sₙ)": f"{total_s_n * 0.4:.2f}", "Reasoning": "Optimal cruise altitude maintained over dynamic jet stream."},
-        {"Step": 4, "Waypoint": f"{arr} Arrival", "Cost (sₙ)": f"{total_s_n * 0.2:.2f}", "Reasoning": "Descent profile aligned with target density and wind shear limits."}
-    ]
-    df_log = pd.DataFrame(log_data)
-    st.dataframe(df_log, use_container_width=True)
-
-    # --- PDF GENERATION FUNCTION ---
+# --- DOWNLOAD REPORT (ONLY UNLOCKED WHEN FINISHED) ---
+if st.session_state.simulation_state == "FINISHED":
+    st.success("🏁 Flight Complete! All A* steps processed successfully.")
+    
     def generate_pdf():
         buffer = io.BytesIO()
         doc = SimpleDocTemplate(buffer, pagesize=letter)
         styles = getSampleStyleSheet()
         elements = []
 
-        # Title
-        title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontSize=18, textColor=colors.HexColor("#1f4e79"))
-        elements.append(Paragraph(f"Aeropath Flight Simulation Report: {dep} to {arr}", title_style))
-        elements.append(Spacer(1, 12))
-
-        # Summary Section
-        elements.append(Paragraph("<b>Executive Summary & Metrics</b>", styles['Heading2']))
-        summary_text = f"""
-        <b>Total A* Cost (sₙ):</b> {total_s_n:.2f}<br/>
-        <b>Effective Range:</b> {effective_range:.2f} NM<br/>
-        <b>Vertical Clearance:</b> {clearance:.0f} ft<br/>
-        <b>Wind Speed:</b> {wind_speed} kts | <b>Radar Reflectivity:</b> {radar} dBZ
-        """
-        elements.append(Paragraph(summary_text, styles['Normal']))
-        elements.append(Spacer(1, 12))
-
-        # Math breakdown
-        elements.append(Paragraph("<b>Applied Mathematical Formulas</b>", styles['Heading2']))
-        math_text = """
-        • Clear Air Cost: ((Distance * ((a + t) * w)) / p) * (1 + Density)<br/>
-        • Storm Cost: ((Distance * ((0.6 * Radar) + (0.4 * Lightning * w)) / p) * (1 + Density)<br/>
-        • Total Path Cost ($s_n$) = Clear Cost + Storm Cost
-        """
-        elements.append(Paragraph(math_text, styles['Normal']))
-        elements.append(Spacer(1, 12))
-
-        # Steps Table
-        elements.append(Paragraph("<b>A* Step Reasoning Log</b>", styles['Heading2']))
-        table_data = [["Step", "Waypoint", "Cost", "Reasoning"]]
-        for row in log_data:
-            table_data.append([str(row["Step"]), row["Waypoint"], row["Cost (sₙ)"], row["Reasoning"]])
+        elements.append(Paragraph(f"Aeropath Flight Report: {dep} to {arr}", styles['Heading1']))
+        elements.append(Spacer(1, 10))
         
-        t = Table(table_data, colWidths=[40, 100, 70, 300])
-        t.setStyle(TableStyle([
-            ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#1f4e79")),
-            ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
-            ('ALIGN', (0,0), (-1,-1), 'LEFT'),
-            ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
-            ('BOTTOMPADDING', (0,0), (-1,0), 6),
-            ('GRID', (0,0), (-1,-1), 0.5, colors.grey)
-        ]))
-        elements.append(t)
-
+        summary = f"""
+        <b>Final A* Cost (sₙ):</b> {total_s_n:.2f}<br/>
+        <b>Effective Range:</b> {effective_range:.2f} NM<br/>
+        <b>Vertical Storm Clearance:</b> {clearance:.0f} ft<br/>
+        <b>Parameters:</b> Wind {wind_speed} kts | Radar {radar} dBZ
+        """
+        elements.append(Paragraph(summary, styles['Normal']))
+        elements.append(Spacer(1, 12))
+        
+        elements.append(Paragraph("<b>Applied Mathematical Rules</b>", styles['Heading2']))
+        math_desc = """
+        • Clear Cost = ((Distance * ((a + t) * w)) / p) * (1 + Density)<br/>
+        • Storm Cost = ((Distance * ((0.6 * Radar) + (0.4 * Lightning * w)) / p) * (1 + Density)<br/>
+        • Total A* Cost ($s_n$) = Clear Cost + Storm Cost
+        """
+        elements.append(Paragraph(math_desc, styles['Normal']))
+        
         doc.build(elements)
         buffer.seek(0)
         return buffer
 
-    # --- DOWNLOAD BUTTON ---
-    pdf_file = generate_pdf()
+    pdf_data = generate_pdf()
     st.download_button(
-        label="📥 Download Official Flight Report (PDF)",
-        data=pdf_file,
-        file_name=f"Aeropath_Report_{dep}_{arr}.pdf",
+        label="📥 Download Completed Flight PDF Report",
+        data=pdf_data,
+        file_name=f"Aeropath_Flight_{dep}_{arr}.pdf",
         mime="application/pdf",
         type="primary"
     )
